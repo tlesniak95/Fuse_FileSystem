@@ -1,0 +1,109 @@
+## FUSE (Filesystem in Userspace)
+
+Overview: FUSE allows for custom file system development in user space, facilitating the creation of file systems without modifying kernel code.
+
+Functionality: FUSE redirects all system calls related to the file system to the user space, which is where our implementation resides.
+
+Key Function: fuse_main(), which is essential for initializing and running the FUSE file system.
+
+Structure: fuse_operations struct, crucial for defining callback functions for various system calls.
+
+
+# Development Steps
+
+mkfs.wfs: Initialize the filesystem, writing the superblock.
+FUSE Integration: Then, focus on integrating with FUSE.
+Argument Parsing: In mount.wfs, process command-line arguments before calling fuse_main.
+Callback Functions: Implement necessary FUSE callback functions, starting with getattr.
+
+# Virtual File System (VFS) Interaction
+
+Role: VFS acts as an abstraction layer in the Linux kernel, providing a common interface for various file systems.
+
+Interaction: VFS interacts with both traditional file systems (like ext3, ext4, xfs) and user-space file systems via FUSE.
+
+# Disk File
+Purpose: Simulates a block device, storing all data and metadata for the file system.
+
+# System Calls and Debugging
+Tool: # strace # can be used to identify which system calls are invoked, aiding in debugging.
+
+Debugging: Hex viewers like xxd are instrumental in examining the raw contents of the disk file for debugging purposes.
+
+# Log-Structured File System
+Definition: Updates are written sequentially, which can improve speed and reduce wear on certain storage media.
+Implication: Since it’s log-structured, we never modify data in place; all updates are APPEND ONLY
+
+# Superblock
+Contains:
+    Magic number - tells program how to interpret the file
+    Head - pointer that points to the end
+
+Following the Superblock are the log entries.
+
+.
+
+# Memory Allocation for wfs_log_entry
+Caution: Care must be taken when allocating memory; use the size from the wfs_inode_ structure for accuracy. 
+### DO NOT USE sizeof(wfs_inode_t)!
+
+# File and Directory Representation
+Uniformity: Both files and directories are represented as log entries, each with specific metadata and structure.
+
+# File System Initialization
+Script: ./create_disk.sh is used for initializing the disk file.
+mkfs.wfs: A utility to write the superblock and potentially initial structures like an empty root directory.
+
+# Mounting the Filesystem
+Command: ./mount.wfs -f -s disk mnt mounts the file system.
+-f for foreground (requires a second terminal).
+-s for single-threaded operation.
+
+# Callback Functions
+Implementation: Essential to implement callback functions in fuse_operations for file operations like getattr, read, write, etc.
+
+# Interacting with the Disk File
+Methods: Can use read/write or mmap; the latter treats the file system as an array but requires careful memory and synchronization management.
+
+# Filesystem Cleaning (Extra Credit)
+Concept: Involves reclaiming space from obsolete log entries, a complex but beneficial optimization for log-structured file systems.
+
+# .mkfs and Superblock
+
+First Task: Writing mkfs.wfs to initialize the filesystem.
+Superblock: Writes the superblock and potentially the first log entry.
+Size Consideration: Superblock is 8 bytes. The initial log entry is the size of an inode (as it represents an empty directory).
+
+# Mounting the Filesystem
+
+Command: ./mount.wfs -f -s disk mnt
+-f runs the filesystem in the foreground (requires a second terminal).
+-s for single-threaded operation.
+Code Focus: Most of the coding effort will be in mount.wfs.
+
+# Log-Structured Design
+
+Modification Approach: Due to the log-structured nature, modifications are appended as log entries, ensuring the original data is not altered.
+
+# Debugging Techniques
+
+Hex Viewer: Utilize tools like xxd for inspecting the superblock and other file system structures.
+
+# Commands for Inspection:
+
+$ ./create_disk.sh to initialize the disk.
+$ xxd -e -g 4 disk | less 
+$ ./mkfs.wfs disk
+$ xxd -e -g 4 disk | less
+
+to view the disk contents before and after running mkfs.wfs.
+
+
+
+# File System Entries
+
+Size Calculation: Each entry size is the sum of the inode size (11 integers) and the data size.
+
+# Disk File Interaction
+
+File Operations: Use standard file operations like open and lseek to interact with the disk file representing the filesystem.
