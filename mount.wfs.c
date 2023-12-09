@@ -170,7 +170,7 @@ given a "reasonable" value. This call is pretty much required for a usable files
 static int wfs_getattr(const char *path, struct stat *stbuf)
 {
     memset(stbuf, 0, sizeof(struct stat)); // Clear the stat structure
-
+   
     // find inode for path
     struct wfs_inode *inode = find_inode(path);
     if (inode == NULL)
