@@ -43,17 +43,21 @@ struct wfs_log_entry *read_log_entry(int fd, off_t offset)
     return entry;
 }
 
+struct wfs_inode *find_inode(const char *path)
+{
 
-struct wfs_inode *find_inode(const char *path) {
-    if (disk_fd == -1) {
+    if (disk_fd == -1)
+    {
         perror("Error opening filesystem image");
         return NULL;
     }
 
     // If the path is the root directory, handle it as a special case
-    if (strcmp(path, "/") == 0) {
+    if (strcmp(path, "/") == 0)
+    {
         struct wfs_inode *root_inode = malloc(sizeof(struct wfs_inode));
-        if (root_inode == NULL) {
+        if (root_inode == NULL)
+        {
             perror("Error allocating memory for root inode");
             return NULL;
         }
@@ -61,14 +65,16 @@ struct wfs_inode *find_inode(const char *path) {
         // The root inode is the first inode after the superblock
         off_t root_inode_offset = sizeof(struct wfs_sb);
         ssize_t read_size = pread(disk_fd, root_inode, sizeof(struct wfs_inode), root_inode_offset);
-        if (read_size != sizeof(struct wfs_inode)) {
+        if (read_size != sizeof(struct wfs_inode))
+        {
             perror("Error reading root inode");
             free(root_inode);
             return NULL;
         }
 
         // If the root inode is marked as deleted, it's an error
-        if (root_inode->deleted) {
+        if (root_inode->deleted)
+        {
             free(root_inode);
             return NULL;
         }
@@ -79,89 +85,81 @@ struct wfs_inode *find_inode(const char *path) {
     // Start after superblock
     off_t current_offset = sizeof(struct wfs_sb);
 
-    // Tokenize the path
     char *path_copy = strdup(path);
-    if (path_copy == NULL) {
+    if (path_copy == NULL)
+    {
         perror("Failed to duplicate path");
         return NULL;
     }
     char *token = strtok(path_copy, "/");
     struct wfs_inode *found_inode = NULL;
     struct wfs_log_entry *entry = NULL;
+    struct wfs_inode *current_inode = NULL; // Most recent inode for each path component
 
-    // This will hold the most recent inode for each path component
-    struct wfs_inode *current_inode = NULL;
-
-    // Traverse the entire disk
-    while (1) {
-        if (entry) {
-            free(entry);  // Free the previous log entry
-            entry = NULL;
-        }
-
-        // Read the next log entry
+    while (1)
+    {
+        free(entry); // Safe to call free on NULL
         entry = read_log_entry(disk_fd, current_offset);
-        if (!entry) {
-            // Reached the end of the log or encountered an error
+        if (!entry)
+        {
+            // End of log or error
             break;
         }
 
-        // Check if this log entry is the one we're looking for
-        if (current_inode == NULL || entry->inode.inode_number == current_inode->inode_number) {
-            // Found an entry for the current path component
-            if (found_inode) {
-                free(found_inode);  // Free the old inode
-            }
+        if (current_inode == NULL || entry->inode.inode_number == current_inode->inode_number)
+        {
+            free(found_inode);
             found_inode = malloc(sizeof(struct wfs_inode));
-            if (found_inode == NULL) {
+            if (!found_inode)
+            {
                 perror("Error allocating memory for inode");
-                free(entry);
-                free(path_copy);
-                return NULL;
+                break; // Exit loop to handle cleanup
             }
             memcpy(found_inode, &entry->inode, sizeof(struct wfs_inode));
-
-            // If this entry is deleted, we should invalidate the found inode
-            if (entry->inode.deleted) {
+            if (entry->inode.deleted)
+            {
                 free(found_inode);
                 found_inode = NULL;
-                break;
-            }
-
-            // If this is the last component of the path, we're done
-            if (token == NULL || *token == '\0') {
-                break;
+                break; // Path component has been deleted
             }
         }
+        ////////////////////////MAKING SMALL CHANGE HERE TO sizeof INODE
+        current_offset += sizeof(struct wfs_inode) + entry->inode.size;
 
-        // Move to the next log entry
-        current_offset += sizeof(struct wfs_log_entry) + entry->inode.size;
-
-        // Check if we need to move on to the next component of the path
-        if (found_inode && S_ISDIR(found_inode->mode)) {
+        if (found_inode && found_inode->mode == S_IFDIR && token)
+        {
             struct wfs_dentry *dentries = (struct wfs_dentry *)(entry->data);
             size_t num_dentries = entry->inode.size / sizeof(struct wfs_dentry);
-            for (size_t i = 0; i < num_dentries; ++i) {
-                if (strcmp(dentries[i].name, token) == 0) {
-                    // Move on to the next component of the path
+            int found = 0;
+            for (size_t i = 0; i < num_dentries; ++i)
+            {
+                if (strcmp(dentries[i].name, token) == 0)
+                {
                     token = strtok(NULL, "/");
                     current_inode = found_inode;
+                    found = 1;
                     break;
                 }
             }
+            if (!found)
+            {
+                free(found_inode);
+                found_inode = NULL;
+                break; // Path component not found in current directory
+            }
+        }
+        else if (found_inode && !S_ISDIR(found_inode->mode) && token == NULL)
+        {
+            // Last path component found and it's not a directory
+            break;
         }
     }
 
-    free(path_copy);  // Free the duplicated path
+    free(path_copy);
+    free(entry); // Free the last read log entry
 
-    if (entry) {
-        free(entry); // Free the last read log entry
-    }
-
-    return found_inode;  // Return the found inode
+    return found_inode; // Could be NULL if path not found or an error occurred
 }
-
-
 
 /*
 Return file attributes. The "stat" structure is described in detail in the stat(2) manual page.
@@ -193,11 +191,67 @@ static int wfs_getattr(const char *path, struct stat *stbuf)
     return 0; // Return 0 on success
 }
 
+static int wfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+{
+    // Find the inode for the file
+    struct wfs_inode *inode = find_inode(path);
+    if (inode == NULL)
+    {
+        return -ENOENT; // No such file
+    }
+
+    // Ensure this is not a directory
+    if (inode->mode == S_IFDIR)
+    {
+        free(inode);
+        return -EISDIR; // Is a directory
+    }
+
+    // Start after the superblock
+    off_t current_offset = sizeof(struct wfs_sb);
+    struct wfs_log_entry *entry;
+    struct wfs_log_entry *latest_entry = NULL;
+
+    // Traverse the log to find the latest entry for the inode
+    while ((entry = read_log_entry(disk_fd, current_offset)) != NULL)
+    {
+        if (entry->inode.inode_number == inode->inode_number && !entry->inode.deleted)
+        {
+            free(latest_entry); // Free any previously found entry
+            latest_entry = entry;
+        }
+        else
+        {
+            free(entry); // Not the entry we're looking for
+        }
+        current_offset += sizeof(struct wfs_inode) + entry->inode.size;
+    }
+
+    if (latest_entry == NULL)
+    {
+        free(inode);
+        return -ENOENT; // No entry found for this inode
+    }
+
+    // Calculate how much data to read
+    size_t bytes_to_read = (latest_entry->inode.size - offset > size) ? size : latest_entry->inode.size - offset;
+
+    // Copy the data from the latest log entry
+    memcpy(buf, latest_entry->data + offset, bytes_to_read);
+
+    // Clean up
+    free(inode);
+    free(latest_entry);
+
+    // Return the number of bytes read
+    return bytes_to_read;
+}
+
 static struct fuse_operations ops = {
     .getattr = wfs_getattr,
     //.mknod      = wfs_mknod,
     //.mkdir      = wfs_mkdir,
-    //.read	    = wfs_read,
+    .read = wfs_read,
     //.write      = wfs_write,
     //.readdir	= wfs_readdir,
     //.unlink    	= wfs_unlink,
@@ -220,7 +274,7 @@ int main(int argc, char *argv[])
         perror("Error opening disk");
         exit(EXIT_FAILURE);
     }
-      // Remove the disk image path from the argument list passed to fuse_main
+    // Remove the disk image path from the argument list passed to fuse_main
     // Note: we need to shift the mount point to where the disk image path was.
     argv[argc - 2] = argv[argc - 1];
     argc--;
