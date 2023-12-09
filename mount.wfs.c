@@ -55,6 +55,7 @@ struct wfs_inode *find_inode(const char *path) {
         struct wfs_inode *root_inode = malloc(sizeof(struct wfs_inode));
         if (root_inode == NULL) {
             perror("Error allocating memory for root inode");
+            printf("Error allocating memory for root inode\n");
             return NULL;
         }
 
@@ -63,13 +64,22 @@ struct wfs_inode *find_inode(const char *path) {
         ssize_t read_size = pread(disk_fd, root_inode, sizeof(struct wfs_inode), root_inode_offset);
         if (read_size != sizeof(struct wfs_inode)) {
             perror("Error reading root inode");
+            printf("Error reading root inode\n");
             free(root_inode);
             return NULL;
         }
-
+        //Print all the filds of root_inode
+        printf("root_inode->inode_number: %d\n", root_inode->inode_number);
+        printf("root_inode->mode: %d\n", root_inode->mode);
+        printf("root_inode->uid: %d\n", root_inode->uid);
+        printf("root_inode->gid: %d\n", root_inode->gid);
+        printf("root_inode->size: %d\n", root_inode->size);
+        printf("root_inode->links: %d\n", root_inode->links);
+        printf("root_inode->deleted: %d\n", root_inode->deleted);
         // If the root inode is marked as deleted, it's an error
         if (root_inode->deleted) {
             free(root_inode);
+            printf("Root inode is marked as deleted\n");
             return NULL;
         }
 
@@ -83,6 +93,7 @@ struct wfs_inode *find_inode(const char *path) {
     char *path_copy = strdup(path);
     if (path_copy == NULL) {
         perror("Failed to duplicate path");
+        printf("Failed to duplicate path\n");
         return NULL;
     }
     char *token = strtok(path_copy, "/");
@@ -115,6 +126,7 @@ struct wfs_inode *find_inode(const char *path) {
             found_inode = malloc(sizeof(struct wfs_inode));
             if (found_inode == NULL) {
                 perror("Error allocating memory for inode");
+                printf("Error allocating memory for inode\n");
                 free(entry);
                 free(path_copy);
                 return NULL;
@@ -171,15 +183,24 @@ given a "reasonable" value. This call is pretty much required for a usable files
 */
 static int wfs_getattr(const char *path, struct stat *stbuf)
 {
+    //Print path
+    printf("path: %s\n", path);
+    //print if root directory
     memset(stbuf, 0, sizeof(struct stat)); // Clear the stat structure
 
+    if (strcmp(path, "/") == 0) { // root directory
+        stbuf->st_mode = S_IFDIR | 00777;
+        stbuf->st_nlink = 2;
+        printf("root directory\n");
+    }
     // find inode for path
     struct wfs_inode *inode = find_inode(path);
     if (inode == NULL)
     {
         return -ENOENT; // No such file or directory
     }
-
+    
+    
     stbuf->st_mode = inode->mode;
     stbuf->st_ino = inode->inode_number;
     stbuf->st_nlink = inode->links;
@@ -224,7 +245,12 @@ int main(int argc, char *argv[])
     // Note: we need to shift the mount point to where the disk image path was.
     argv[argc - 2] = argv[argc - 1];
     argc--;
-
+    printf("argc: %d\n", argc);
+    printf("argv[0]: %s\n", argv[0]);
+    printf("argv[1]: %s\n", argv[1]);
+    printf("argv[2]: %s\n", argv[2]);
+    printf("argv[3]: %s\n", argv[3]);
+    printf("argv[4]: %s\n", argv[4]);
     // Initialize your filesystem here if needed
     // ...
 

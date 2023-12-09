@@ -19,25 +19,19 @@ int main (int argc, char *argv[]) {
 
     struct wfs_inode root_inode = {
         .inode_number = 0,
-        .mode = S_IFDIR,
+        .mode = S_IFDIR | 0755,
         .uid = getuid(),
         .gid = getgid(),
         .size = 0,
-        .links = 1
+        .links = 1,
+        .deleted = 0,
     };
 
     struct wfs_log_entry root_entry = {
         .inode = root_inode
         // .data is empty since this is a new directory
     };
-
-    //write root inode
-    if(write(fd, &root_entry, sizeof(root_entry)) != sizeof(root_entry)) {
-        printf("error writing root inode\n");
-        close(fd);
-        return 1;
-    }
-
+    
     //initialze and update superblock
     struct wfs_sb sb = {WFS_MAGIC, sizeof(struct wfs_sb) + sizeof(root_entry)};
     lseek(fd, 0, SEEK_SET);
@@ -46,6 +40,14 @@ int main (int argc, char *argv[]) {
         close(fd);
         return 1;
     }
+    //write root inode
+    if(write(fd, &root_entry, sizeof(root_entry)) != sizeof(root_entry)) {
+        printf("error writing root inode\n");
+        close(fd);
+        return 1;
+    }
+
+
 
     // Close the disk file
     close(fd);
