@@ -213,7 +213,7 @@ int main(int argc, char *argv[])
         printf("Usage: %s <mountpoint> <disk image>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-    char *disk_path = argv[argc - 1];
+    char *disk_path = argv[argc - 2];
     disk_fd = open(disk_path, O_RDWR);
     if (disk_fd == -1)
     {
