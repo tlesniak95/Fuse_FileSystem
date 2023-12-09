@@ -5,7 +5,8 @@
 #include "wfs.h"
 #include <fcntl.h>
 
-int main (int argc, char *argv[]) {
+
+int main(int argc, char *argv[]) {
     if (argc != 2) {
         printf("expected 2 arguments, got %d\n", argc);
         exit(1);
