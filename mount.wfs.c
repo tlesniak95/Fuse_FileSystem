@@ -11,8 +11,8 @@
 
 int disk_fd = -1;
 
-unsigned int max_inode = 0;
-unsigned int * used_inodes_arr;
+unsigned int max_inode;
+unsigned int * used_inodes;
 struct wfs_sb sb;
 
 struct wfs_log_entry *find_last_log_entry(int fd, unsigned int inode_number) {
@@ -54,11 +54,10 @@ struct wfs_log_entry *find_last_log_entry(int fd, unsigned int inode_number) {
                 break;
             }
         }
-
         // Move to the next log entry
         current_offset += entry_size;
     }
-
+    //Print current offset
     return latest_entry; // Return the latest entry found or NULL if none
 }
 
@@ -287,55 +286,264 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
 }
 
 
-// static int wfs_mkdir(const char *path, mode_t mode) {
-//     // Check if the directory already exists
-//     if (find_inode(path, 0) != NULL) {
-//         return -EEXIST;
-//     }
+static int wfs_mkdir(const char *path, mode_t mode) {
+    printf("Debug: wfs_mknod, gets here!\n");
+    // Check if the file already exists
+    unsigned int inode_number = find_inode_number(path);
+    if (inode_number != -1) {
+        return -EEXIST; // File exists
+    }
 
-//     // Create a new inode for the directory
-//     struct wfs_inode new_dir_inode = {
-//         .inode_number = curr_inode_num++,
-//         .mode = S_IFDIR | mode, // Set directory flag and use the provided mode
-//         .uid = getuid(),
-//         .gid = getgid(),
-//         .size = 0, // Initial size of the directory (no entries yet)
-//         .links = 1,
-//         .deleted = 0,
-//         // Initialize other fields as needed
-//     };
+    // Extract the parent directory's path and name of the new file
+    char *path_copy_dir = strdup(path); // Make a copy for dirname
+    char *path_copy_base = strdup(path); // Make a copy for basename
+    if (!path_copy_dir || !path_copy_base) {
+        // Handle memory allocation failure
+        free(path_copy_dir);
+        free(path_copy_base);
+        return -ENOMEM;
+    }
+    char *parent_path = dirname(path_copy_dir);
+    char *base_name = basename(path_copy_base);
+    printf("Debug: parent_path = %s\n", parent_path);
+    printf("Debug: base_name = %s\n", base_name);
+    printf("Debug: path = %s\n", path);
+    // Find inode number for the parent directory
+    unsigned int parent_inode_number = find_inode_number(parent_path);
+    if (parent_inode_number == -1) {
+        free(path_copy_dir);
+        free(path_copy_base);
+        return -ENOENT; // Parent directory doesn't exist
+    }
 
-//     // Create a log entry for the new directory
-//     struct wfs_log_entry new_entry = {
-//         .inode = new_dir_inode
-//         // No data needed as it's an empty directory
-//     };
+    // Get the last log entry of the parent directory
+    struct wfs_log_entry *parent_entry = find_last_log_entry(disk_fd, parent_inode_number);
+    if (parent_entry == NULL || !S_ISDIR(parent_entry->inode.mode)) {
+        free(path_copy_dir);
+        free(path_copy_base);
+        return -ENOTDIR; // Parent is not a directory
+    }
 
-//     // Append the new log entry to the log
-//     // You need to determine the offset to write to, based on your filesystem structure
-//     //
+    // Allocate memory for the new dentry and add it to the parent's data
+    size_t new_data_size = parent_entry->inode.size + sizeof(struct wfs_dentry);
+    char *new_data = malloc(new_data_size);
+    if (new_data == NULL) {
+        free(path_copy_dir);
+        free(path_copy_base);
+        free(parent_entry);
+        return -ENOMEM; // Not enough memory
+    }
 
+    // Manually copy each existing dentry to new data
+    struct wfs_dentry *old_dentries = (struct wfs_dentry *)(parent_entry->data);
+    size_t num_old_dentries = parent_entry->inode.size / sizeof(struct wfs_dentry);
+    for (size_t i = 0; i < num_old_dentries; ++i) {
+        struct wfs_dentry *current_dentry = (struct wfs_dentry *)(new_data + i * sizeof(struct wfs_dentry));
+        *current_dentry = old_dentries[i];
+    }
+
+    // Create and add the new dentry at the end
+    struct wfs_dentry *new_dentry = (struct wfs_dentry *)(new_data + num_old_dentries * sizeof(struct wfs_dentry));
     
-//     off_t write_offset = sb.head;
-//     printf("Debug: write_offset = %ld\n", write_offset);
+    unsigned int new_inode_number = -1;
+    // Find the next available inode number
+    for (int i = 1; i < max_inode + 100; i++) {
+        if (used_inodes[i] == 0) {
+            new_inode_number = i;
+            used_inodes[i] = 1;
+            break;
+        }
+    }
+    if (new_inode_number == -1) {
+        free(new_data);
+        free(parent_path);
+        return -ENOSPC;
+    }
+    new_dentry->inode_number = new_inode_number;
+    strncpy(new_dentry->name, base_name, MAX_FILE_NAME_LEN - 1);
+    new_dentry->name[MAX_FILE_NAME_LEN - 1] = '\0'; // Ensure null termination
+    printf("Debug: new_dentry->inode_number = %ld\n", new_dentry->inode_number);
+    printf("Debug: new_dentry->name = %s\n", new_dentry->name);
+    // Create the new inode
+    struct wfs_inode new_inode = {
+        .inode_number = new_inode_number,
+        .mode = S_IFDIR | mode, // Regular file with the specified mode
+        .uid = getuid(),
+        .gid = getgid(),
+        .size = 0,
+        .links = 1,
+        .deleted = 0
+    };
 
-//     // Print the size of the new_entry structure
-//     printf("Debug: sizeof(new_entry) = %lu\n", sizeof(new_entry));
+    // Create a new log entry for the file
+    struct wfs_log_entry new_file_entry = {
+        .inode = new_inode
+        // .data field is not needed as it's a file with no content yet
+    };
 
-//     // Perform the pwrite operation
-//     ssize_t write_result = pwrite(disk_fd, &new_entry, sizeof(new_entry), write_offset);
-//     if (write_result != sizeof(new_entry)) {
-//         // If pwrite failed, print the error details
-//         perror("Debug: Error in pwrite");
-//         printf("Debug: write_result = %zd\n", write_result);
-//         return -EIO; // Input/output error
-//     }
-//     printf("Debug: write_result = %zd\n", write_result);
-//     // Update filesystem metadata as needed
-//     // For example, updating the 'head' in the superblock if your design requires it
-//     sb.head += sizeof(new_entry);
-//     return 0;
-// }
+    // Append the new file log entry to the log
+    printf("Debug: sb.head = %d\n", sb.head);
+    printf("Debug: sizeof(new_file_entry) = %lu\n", sizeof(new_file_entry));
+    //Debug, print sizeof root entry and sb head, and sb size
+    printf("Debug: sizeof root entry = %lu\n", sizeof(struct wfs_log_entry));
+    printf("Debug: sb size = %lu\n", sizeof(sb));
+    off_t write_offset = sb.head;
+    if (pwrite(disk_fd, &new_file_entry, sizeof(new_file_entry), write_offset) != sizeof(new_file_entry)) {
+        free(new_data);
+        free(parent_entry);
+        free(path_copy_dir);
+        free(path_copy_base);
+        printf("Error in pwrite, child\n");
+        return -EIO; // I/O error
+    }
+    sb.head += sizeof(new_file_entry);
+
+    printf("Debug: sb.head = %d\n", sb.head);
+    write_offset = sb.head;
+    // Update parent directory's log entry with the new data
+    // parent_entry->inode.size = new_data_size;
+    //Print num of old dentries
+    printf("Debug: num_old_dentries = %lu\n", num_old_dentries);
+    printf("Debug: sizeof(struct wfs_dentry) = %lu\n", sizeof(struct wfs_dentry));
+    printf("Debug: Number of bytes to write = %lu\n", sizeof(struct wfs_inode) + (num_old_dentries + 1 * sizeof(struct wfs_dentry)));
+
+    // Copy the inode part of the parent entry
+    struct wfs_inode updated_parent_inode = parent_entry->inode;
+    updated_parent_inode.size = (num_old_dentries + 1) * sizeof(struct wfs_dentry);
+
+    // Allocate memory for the updated parent entry
+    size_t updated_entry_size = sizeof(struct wfs_inode) + updated_parent_inode.size;
+    struct wfs_log_entry *updated_parent_entry = (struct wfs_log_entry *)malloc(updated_entry_size);
+    if (!updated_parent_entry) {
+        free(new_data);
+        free(parent_entry);
+        free(path_copy_dir);
+        free(path_copy_base);
+        return -ENOMEM;
+    }
+
+    // Set up the updated parent entry
+    updated_parent_entry->inode = updated_parent_inode;
+    memcpy(updated_parent_entry->data, new_data, updated_parent_inode.size);
+
+        // Debug: Print the details of the updated parent entry before writing to disk
+    printf("Debug: updated_parent_entry->inode.inode_number = %d\n", updated_parent_entry->inode.inode_number);
+    printf("Debug: updated_parent_entry->inode.size = %d\n", updated_parent_entry->inode.size);
+
+    // Assuming the updated parent data is of type struct wfs_dentry
+    struct wfs_dentry *updated_dentries = (struct wfs_dentry *)(updated_parent_entry->data);
+    for (size_t i = 0; i < updated_parent_inode.size / sizeof(struct wfs_dentry); ++i) {
+        printf("Debug: Dentry %lu - inode number = %lu, name = %s\n", i, updated_dentries[i].inode_number, updated_dentries[i].name);
+    }
+
+    // Optionally, print the data in hexadecimal format
+    printf("Debug: Updated Parent Data in hex = ");
+    for (size_t i = 0; i < updated_parent_inode.size; ++i) {
+        printf("%02x ", ((unsigned char*)updated_parent_entry->data)[i]);
+    }
+    printf("\n");
+    // Write the updated parent entry to disk
+    write_offset = sb.head; // Current head position
+    if (pwrite(disk_fd, updated_parent_entry, updated_entry_size, write_offset) != updated_entry_size) {
+        free(updated_parent_entry);
+        free(new_data);
+        free(parent_entry);
+        free(path_copy_dir);
+        free(path_copy_base);
+        printf("Error in pwrite, new parent entry\n");
+        return -EIO; // I/O error
+    }
+    sb.head += updated_entry_size; // Update head position
+    
+
+    //See if you can read the new file entries, by reading the log for their inodes
+    struct wfs_log_entry *new_file_entry_read = find_last_log_entry(disk_fd, new_inode_number);
+    if (new_file_entry_read == NULL) {
+        printf("Error reading new file entry\n");
+        return -EIO;
+    }
+    //Print log entry inode and data
+    printf("Debug: new_file_entry_read->inode.inode_number = %d\n", new_file_entry_read->inode.inode_number);
+    printf("Debug: new_file_entry_read->inode.mode = %d\n", new_file_entry_read->inode.mode);
+    printf("Debug: new_file_entry_read->inode.uid = %d\n", new_file_entry_read->inode.uid);
+    printf("Debug: new_file_entry_read->inode.gid = %d\n", new_file_entry_read->inode.gid);
+    printf("Debug: new_file_entry_read->inode.size = %d\n", new_file_entry_read->inode.size);
+    printf("Debug: new_file_entry_read->inode.links = %d\n", new_file_entry_read->inode.links);
+    printf("Debug: new_file_entry_read->inode.deleted = %d\n", new_file_entry_read->inode.deleted);
+    printf("Debug: new_file_entry_read->data = %s\n", new_file_entry_read->data);
+    //Print offset posiiton of log entry
+
+    //Print length of data
+
+    // See if you can read the new parent entries, by reading the log for their inodes
+    struct wfs_log_entry *new_parent_entry_read = find_last_log_entry(disk_fd, parent_inode_number);
+    if (new_parent_entry_read == NULL) {
+        printf("Error reading new parent entry\n");
+        return -EIO;
+    }
+
+    //Print log entry inode and data
+    printf("Debug: new_parent_entry_read->inode.inode_number = %d\n", new_parent_entry_read->inode.inode_number);
+    printf("Debug: new_parent_entry_read->inode.mode = %d\n", new_parent_entry_read->inode.mode);
+    printf("Debug: new_parent_entry_read->inode.uid = %d\n", new_parent_entry_read->inode.uid);
+    printf("Debug: new_parent_entry_read->inode.gid = %d\n", new_parent_entry_read->inode.gid);
+    printf("Debug: new_parent_entry_read->inode.size = %d\n", new_parent_entry_read->inode.size);
+    printf("Debug: new_parent_entry_read->inode.links = %d\n", new_parent_entry_read->inode.links);
+    printf("Debug: new_parent_entry_read->inode.deleted = %d\n", new_parent_entry_read->inode.deleted);
+    printf("Debug: new_parent_entry_read->data = %s\n", new_parent_entry_read->data);
+
+
+    //Debug, see if you can find the inode numbers of the new file and parent using find_inode_number
+    printf("Debug: new file inode number = %d\n", find_inode_number(path));
+    printf("Debug: new parent inode number = %d\n", find_inode_number(parent_path));
+
+        // Assuming new_file_entry_read is a pointer to your struct wfs_log_entry
+    printf("Debug: Inode size = %d\n", new_file_entry_read->inode.size);
+
+    // Print the data in hexadecimal format
+    printf("Debug: Data in hex = ");
+    for (int i = 0; i < new_file_entry_read->inode.size; ++i) {
+        printf("%02x ", ((unsigned char*)new_file_entry_read->data)[i]);
+    }
+    printf("\n");
+
+    // Assuming new_parent_entry_read is a pointer to your struct wfs_log_entry
+    printf("Debug: Parent Inode size = %d\n", new_parent_entry_read->inode.size);
+
+    if (new_parent_entry_read->inode.size >= sizeof(struct wfs_dentry)) {
+        struct wfs_dentry *dentry = (struct wfs_dentry *)(new_parent_entry_read->data);
+
+        // Print the inode number of the dentry
+        printf("Debug: Dentry inode number = %lu\n", dentry->inode_number);
+
+        // Print the name of the dentry
+        printf("Debug: Dentry name = %s\n", dentry->name);
+    } else {
+        printf("Debug: Not enough data for a complete dentry\n");
+    }
+
+    // Optionally, you can still print the data in hexadecimal format
+    printf("Debug: Parent Data in hex = ");
+    for (int i = 0; i < new_parent_entry_read->inode.size; ++i) {
+        printf("%02x ", ((unsigned char*)new_parent_entry_read->data)[i]);
+    }
+    printf("\n");
+
+
+    // Clean up
+    free(new_data);
+    free(parent_entry);
+    free(path_copy_dir);
+    free(path_copy_base);
+
+    // Update the superblock with the new head position
+    if (pwrite(disk_fd, &sb, sizeof(sb), 0) != sizeof(sb)) {
+        perror("Error updating superblock");
+        return -EIO; // I/O error
+    }
+
+    return 0; // Success
+}
 
 static int wfs_mknod(const char *path, mode_t mode, dev_t rdev) {
     // Check if the file already exists
@@ -345,21 +553,29 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev) {
     }
 
     // Extract the parent directory's path and name of the new file
-    char *path_copy = strdup(path);
-    char *parent_path = dirname(path_copy);
-    char *base_name = basename(path_copy);
-
+    char *path_copy_dir = strdup(path); // Make a copy for dirname
+    char *path_copy_base = strdup(path); // Make a copy for basename
+    if (!path_copy_dir || !path_copy_base) {
+        // Handle memory allocation failure
+        free(path_copy_dir);
+        free(path_copy_base);
+        return -ENOMEM;
+    }
+    char *parent_path = dirname(path_copy_dir);
+    char *base_name = basename(path_copy_base);
     // Find inode number for the parent directory
     unsigned int parent_inode_number = find_inode_number(parent_path);
     if (parent_inode_number == -1) {
-        free(path_copy);
+        free(path_copy_dir);
+        free(path_copy_base);
         return -ENOENT; // Parent directory doesn't exist
     }
 
     // Get the last log entry of the parent directory
     struct wfs_log_entry *parent_entry = find_last_log_entry(disk_fd, parent_inode_number);
     if (parent_entry == NULL || !S_ISDIR(parent_entry->inode.mode)) {
-        free(path_copy);
+        free(path_copy_dir);
+        free(path_copy_base);
         return -ENOTDIR; // Parent is not a directory
     }
 
@@ -367,32 +583,40 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev) {
     size_t new_data_size = parent_entry->inode.size + sizeof(struct wfs_dentry);
     char *new_data = malloc(new_data_size);
     if (new_data == NULL) {
-        free(path_copy);
+        free(path_copy_dir);
+        free(path_copy_base);
         free(parent_entry);
         return -ENOMEM; // Not enough memory
     }
 
-    // Copy the existing data and add the new dentry
-    memcpy(new_data, parent_entry->data, parent_entry->inode.size);
-    struct wfs_dentry *new_dentry = (struct wfs_dentry *)(new_data + parent_entry->inode.size);
+    // Manually copy each existing dentry to new data
+    struct wfs_dentry *old_dentries = (struct wfs_dentry *)(parent_entry->data);
+    size_t num_old_dentries = parent_entry->inode.size / sizeof(struct wfs_dentry);
+    for (size_t i = 0; i < num_old_dentries; ++i) {
+        struct wfs_dentry *current_dentry = (struct wfs_dentry *)(new_data + i * sizeof(struct wfs_dentry));
+        *current_dentry = old_dentries[i];
+    }
 
+    // Create and add the new dentry at the end
+    struct wfs_dentry *new_dentry = (struct wfs_dentry *)(new_data + num_old_dentries * sizeof(struct wfs_dentry));
+    
     unsigned int new_inode_number = -1;
     // Find the next available inode number
-    for (int i = 1; i < max_inode + 1; i++) {
-        if (used_inodes_arr[i] == 0) {
+    for (int i = 1; i < max_inode + 100; i++) {
+        if (used_inodes[i] == 0) {
             new_inode_number = i;
-            used_inodes_arr[i] = 1;
+            used_inodes[i] = 1;
             break;
         }
     }
     if (new_inode_number == -1) {
+        free(new_data);
         free(parent_path);
         return -ENOSPC;
     }
-    new_dentry->inode_number = new_inode_number; // Assuming curr_inode_num is a global variable for tracking inode numbers
+    new_dentry->inode_number = new_inode_number;
     strncpy(new_dentry->name, base_name, MAX_FILE_NAME_LEN - 1);
     new_dentry->name[MAX_FILE_NAME_LEN - 1] = '\0'; // Ensure null termination
-
     // Create the new inode
     struct wfs_inode new_inode = {
         .inode_number = new_inode_number,
@@ -410,32 +634,57 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev) {
         // .data field is not needed as it's a file with no content yet
     };
 
-    // Append the new file log entry to the log
     off_t write_offset = sb.head;
     if (pwrite(disk_fd, &new_file_entry, sizeof(new_file_entry), write_offset) != sizeof(new_file_entry)) {
         free(new_data);
         free(parent_entry);
-        free(path_copy);
+        free(path_copy_dir);
+        free(path_copy_base);
         printf("Error in pwrite, child\n");
         return -EIO; // I/O error
     }
     sb.head += sizeof(new_file_entry);
 
-    // Update parent directory's log entry with the new data
-    parent_entry->inode.size = new_data_size;
-    if (pwrite(disk_fd, parent_entry, sizeof(struct wfs_log_entry) + new_data_size, write_offset) != sizeof(struct wfs_log_entry) + new_data_size) {
+    printf("Debug: sb.head = %d\n", sb.head);
+    write_offset = sb.head;
+
+    // Copy the inode part of the parent entry
+    struct wfs_inode updated_parent_inode = parent_entry->inode;
+    updated_parent_inode.size = (num_old_dentries + 1) * sizeof(struct wfs_dentry);
+
+    // Allocate memory for the updated parent entry
+    size_t updated_entry_size = sizeof(struct wfs_inode) + updated_parent_inode.size;
+    struct wfs_log_entry *updated_parent_entry = (struct wfs_log_entry *)malloc(updated_entry_size);
+    if (!updated_parent_entry) {
         free(new_data);
         free(parent_entry);
-        free(path_copy);
-        printf("Error in pwrite, parent\n");
+        free(path_copy_dir);
+        free(path_copy_base);
+        return -ENOMEM;
+    }
+
+    // Set up the updated parent entry
+    updated_parent_entry->inode = updated_parent_inode;
+    memcpy(updated_parent_entry->data, new_data, updated_parent_inode.size);
+
+    // Write the updated parent entry to disk
+    write_offset = sb.head; // Current head position
+    if (pwrite(disk_fd, updated_parent_entry, updated_entry_size, write_offset) != updated_entry_size) {
+        free(updated_parent_entry);
+        free(new_data);
+        free(parent_entry);
+        free(path_copy_dir);
+        free(path_copy_base);
+        printf("Error in pwrite, new parent entry\n");
         return -EIO; // I/O error
     }
-    sb.head += sizeof(struct wfs_log_entry) + new_data_size;
+    sb.head += updated_entry_size; // Update head position
 
     // Clean up
     free(new_data);
     free(parent_entry);
-    free(path_copy);
+    free(path_copy_dir);
+    free(path_copy_base);
 
     // Update the superblock with the new head position
     if (pwrite(disk_fd, &sb, sizeof(sb), 0) != sizeof(sb)) {
@@ -446,17 +695,19 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev) {
     return 0; // Success
 }
 
-
+static int wfs_unlink(const char *path) {
+    return 0;
+}
 
 
 static struct fuse_operations ops = {
     .getattr = wfs_getattr,
     .mknod      = wfs_mknod,
-    // .mkdir      = wfs_mkdir,
+    .mkdir      = wfs_mkdir,
     .read	    = wfs_read,
     //.write      = wfs_write,
     .readdir	= wfs_readdir,
-    //.unlink    	= wfs_unlink,
+    .unlink    	= wfs_unlink,
 };
 
 int main(int argc, char *argv[])
@@ -491,7 +742,7 @@ int main(int argc, char *argv[])
     // Step 1: Find the maximum inode number
     off_t current_offset = sizeof(struct wfs_sb);
     struct wfs_log_entry *entry;
-
+    max_inode = 0;
     // This approach may be wrong, could be better to use an array of available inode numbers
     while (current_offset < sb.head && ((entry = read_log_entry(disk_fd, current_offset)) != NULL)) {
         if (entry->inode.inode_number > max_inode) {
@@ -503,7 +754,7 @@ int main(int argc, char *argv[])
     //Create array of sie max_inode + 1
     //Initialize all values to 0
 
-    unsigned int used_inodes[max_inode + 1000];
+    used_inodes = malloc(sizeof(unsigned int) * (max_inode + 100));
     for (int i = 0; i < max_inode + 1; i++) {
         used_inodes[i] = 0;
     }
@@ -517,7 +768,6 @@ int main(int argc, char *argv[])
         current_offset += sizeof(struct wfs_inode) + entry->inode.size;
         free(entry);
     }
-    used_inodes_arr = used_inodes;
       // Remove the disk image path from the argument list passed to fuse_main
     // Note: we need to shift the mount point to where the disk image path was.
     argv[argc - 2] = argv[argc - 1];
