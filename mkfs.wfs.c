@@ -19,7 +19,7 @@ int main (int argc, char *argv[]) {
 
     struct wfs_inode root_inode = {
         .inode_number = 0,
-        .mode = S_IFDIR | 0755,
+        .mode = S_IFDIR  | 0755,
         .uid = getuid(),
         .gid = getgid(),
         .size = 0,
